@@ -1,4 +1,4 @@
-CFLAGS = -Wall -Wextra -pedantic -pthread
+CFLAGS = -Wall -Wextra -pedantic -lpthread
 
 all: server
 
