@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -11,12 +12,13 @@
 int readline(int fd, char *buf, int maxlen);
 void *thread(void *vargp);
 void echo(int connfd);
+void handle_request(int connfd);
 
 int main(int argc, char **argv)
 {
     int socket_desc, port;
-    socklen_t clientlen;
     struct sockaddr_in server, clientaddr;
+    socklen_t clientlen = sizeof(clientaddr);
     int *client_sockp;
     pthread_t tid;
 
@@ -53,10 +55,11 @@ int main(int argc, char **argv)
 
     while (1)
     {
-        client_sockp = malloc(sizeof(int));
+        client_sockp = malloc(sizeof(int)); // frees in thread function
         *client_sockp = accept(socket_desc, (struct sockaddr *)&clientaddr, &clientlen);
         pthread_create(&tid, NULL, thread, client_sockp);
     }
+    printf("loop left\n");
 }
 
 /*
@@ -68,7 +71,7 @@ int main(int argc, char **argv)
 int readline(int fd, char *buf, int maxlen)
 {
     int nc, n = 0;
-    for (n = 0; n < maxlen - 1; n++)
+    for (n = 0; n < maxlen - 2; n++)
     {
         nc = read(fd, &buf[n], 1);
         if (nc <= 0)
@@ -80,15 +83,46 @@ int readline(int fd, char *buf, int maxlen)
     return n + 1;
 }
 
+int read_request(int fd, char *buf, int maxlen)
+{
+    int nc, n = 0;
+    for (n = 0; n < maxlen - 1; n++)
+    {
+        nc = read(fd, &buf[n], 1);
+        if (nc <= 0)
+            return -1;
+        if (n >= 4 && memcmp(&buf[n - 3], "\r\n\r\n", 4) == 0)
+        {
+            break; // Found the end of headers!
+        }
+    }
+    buf[n + 1] = 0;
+    return n + 1;
+}
+
 /* thread routine */
 void *thread(void *vargp)
 {
     int connfd = *((int *)vargp);
     pthread_detach(pthread_self());
     free(vargp);
-    echo(connfd);
+    handle_request(connfd);
     close(connfd);
     return NULL;
+}
+
+void handle_request(int connfd)
+{
+    size_t n;
+    char buf[MAXLINE];
+    // char header[MAXLINE];
+    // char host[MAXLINE];
+    // char connected[MAXLINE];
+
+    read_request(connfd, buf, MAXLINE);
+    printf("%s", buf);
+
+    close(connfd);
 }
 
 void echo(int connfd)
@@ -96,7 +130,7 @@ void echo(int connfd)
     size_t n;
     char buf[MAXLINE];
 
-    while ((n = readline(connfd, buf, MAXLINE)) != 0)
+    while ((n = readline(connfd, buf, MAXLINE)) > 0)
     {
         printf("server received %zu bytes\n", n);
         printf("%s", buf);
