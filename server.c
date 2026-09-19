@@ -99,6 +99,7 @@ void echo(int connfd)
     while ((n = readline(connfd, buf, MAXLINE)) != 0)
     {
         printf("server received %zu bytes\n", n);
+        printf("%s", buf);
         write(connfd, buf, n);
     }
 }
