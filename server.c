@@ -2,7 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/sendfile.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 
@@ -224,9 +228,30 @@ void *thread(void *vargp)
     return NULL;
 }
 
+// no idea what to do if i can't determine file type, so i just say its text for now
+const char *get_content_type(char *path)
+{
+    if (strstr(path, ".html"))
+        return "text/html";
+    if (strstr(path, ".png"))
+        return "image/png";
+    if (strstr(path, ".gif"))
+        return "image/gif";
+    if (strstr(path, ".jpg"))
+        return "image/jpg";
+    if (strstr(path, ".ico"))
+        return "image/x-icon";
+    if (strstr(path, ".css"))
+        return "test/css";
+    if (strstr(path, ".js"))
+        return "application/javascript";
+    return "text/plain";
+}
+
 void handle_request(int connfd)
 {
     char buf[MAXLINE];
+    char response_string[MAXLINE];
 
     switch (read_request(connfd, buf, MAXLINE))
     {
@@ -240,14 +265,68 @@ void handle_request(int connfd)
         Request_Info request = {0};
         if (parse_request(buf, &request, MAXLINE) == -1) // should fill out our request struct to use for constructing response headers
         {
-            // malformed header found, just send back request
+            // malformed header found, just send bad request response
             char *to_send = BAD_REQUEST;
             // TODO: change to send and break out of while loop on sigpipe accordingly
             write(connfd, to_send, sizeof(to_send));
             break;
         }
-        // happy path
 
+        char *ver_string;
+        // check if http version is legit
+        if (request.version == NEW_VERSION)
+        {
+            ver_string = "HTTP/1.1";
+        }
+        else if (request.version == OLD_VERSION)
+        {
+            ver_string = "HTTP/1.0";
+        }
+        else
+        {
+            // send unknown version response
+            break;
+        }
+
+        // check if GET request
+        if (!request.is_get)
+        {
+            // send illegal operation response
+            break;
+        }
+
+        // check if path works / get file stats
+        // happy path
+        int fd = open(request.path, O_RDONLY);
+        // check for open errors, send appropriate message if so
+        if (fd == -1)
+        {
+            if (errno == ENOENT)
+            {
+                // send 404 response
+            }
+            else
+            {
+                // send permission issue response (403)
+            }
+            break;
+        }
+
+        struct stat file_stat;
+        if (fstat(fd, &file_stat) == -1)
+        {
+            // send permission issue response I guess
+            break;
+        }
+
+        snprintf(response_string, MAXLINE,
+                 "%s 200 OK\r\n"
+                 "Content-Type: %s\r\n"
+                 "Content-Length: %llu\r\n\r\n",
+                 ver_string, get_content_type(request.path), file_stat.st_size);
+
+        write(connfd, response_string, strlen(response_string));
+        sendfile(connfd, fd, NULL, (size_t)file_stat.st_size);
         // TODO: set MSG_NOSIGNAL Flag for send, so client can't cause a sigpipe that crashes everything
         // still check for sigpipe errno to break out of loop
         break;
