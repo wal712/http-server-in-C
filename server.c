@@ -8,6 +8,32 @@
 
 #define MESSAGE_Q 1024
 #define MAXLINE 4096
+#define ROOT_DIR "./www"
+#define DEFAULT_FILE "index.html"
+
+#define BAD_REQUEST "HTTP/1.1 400 Bad Request\r\n\r\n"
+
+enum Read_Status
+{
+    GOOD_HEADER,
+    BAD_HEADER,
+    TIMEOUT_OCCURED,
+};
+
+enum Http_Version
+{
+    NEW_VERSION,
+    OLD_VERSION,
+    UNKNOWN_VERSION,
+};
+
+typedef struct
+{
+    enum Http_Version version;
+    int is_get;
+    char path[MAXLINE];
+    int keep_alive;
+} Request_Info;
 
 int readline(int fd, char *buf, int maxlen);
 void *thread(void *vargp);
@@ -71,7 +97,7 @@ int main(int argc, char **argv)
 int readline(int fd, char *buf, int maxlen)
 {
     int nc, n = 0;
-    for (n = 0; n < maxlen - 2; n++)
+    for (n = 0; n < maxlen - 1; n++)
     {
         nc = read(fd, &buf[n], 1);
         if (nc <= 0)
@@ -83,21 +109,108 @@ int readline(int fd, char *buf, int maxlen)
     return n + 1;
 }
 
+/*
+ * shamelessly modified this from: http://www.csc.villanova.edu/~mdamian/sockets/echoC.htm
+ * read_request - attempts to read till request footer
+ * return -1 if error
+ * return 0 if proper footer
+ */
+
 int read_request(int fd, char *buf, int maxlen)
 {
     int nc, n = 0;
+    enum Read_Status status = BAD_HEADER;
     for (n = 0; n < maxlen - 1; n++)
     {
         nc = read(fd, &buf[n], 1);
         if (nc <= 0)
-            return -1;
+        {
+            status = TIMEOUT_OCCURED;
+            break;
+        }
         if (n >= 4 && memcmp(&buf[n - 3], "\r\n\r\n", 4) == 0)
         {
+            status = GOOD_HEADER;
             break; // Found the end of headers!
         }
     }
     buf[n + 1] = 0;
-    return n + 1;
+    return status;
+}
+
+// returns -1 for a malformed header (info isn't correct, or first header just doesn't exist), 0 for everything else
+int parse_request(char *read_buf, Request_Info *info, int maxlen)
+{
+    // first, check http version, send error 505 if not recognized
+    // Note: if http 1.0, can potentially skip check for connection field and just return, maybe set a flag
+    char *header_pointer, *curr_header;
+    const char *header_delim = "\r\n";
+
+    curr_header = strtok_r(read_buf, header_delim, &header_pointer); // first header should be the main brunt of what we care about
+    if (!curr_header)
+    {
+        // header doesn't even exist
+        return -1;
+    }
+
+    char request_type[6];
+    char temp_path[1024];
+    char version[20];
+
+    if (sscanf(curr_header, "%5s %1023s %19s", request_type, temp_path, version) != 3)
+    {
+        // improperly formatted header
+        return -1;
+    }
+
+    const char *new_version = "HTTP/1.1";
+    const char *old_version = "HTTP/1.0";
+
+    if (strncmp(version, new_version, sizeof(new_version)) == 0)
+    {
+        info->version = NEW_VERSION;
+    }
+    else if (strncmp(version, old_version, sizeof(old_version)) == 0)
+    {
+        info->version = OLD_VERSION;
+    }
+    else
+    {
+        info->version = UNKNOWN_VERSION; // bad version, just return, don't need to parse the rest
+        return 0;
+    }
+
+    if (strncmp(request_type, "GET", 3) == 0)
+    {
+        info->is_get = 1;
+    }
+    else
+    {
+        info->is_get = 0;
+        return 0; // illegal action, don't need to parse the rest
+    }
+
+    // parse filepath, prepend ./www and append index.html if path ends in '/'
+    if (temp_path[strlen(temp_path) - 1] == '/')
+    {
+        snprintf(info->path, MAXLINE, "%s%s%s", ROOT_DIR, temp_path, DEFAULT_FILE);
+    }
+    else
+    {
+        snprintf(info->path, MAXLINE, "%s%s", ROOT_DIR, temp_path);
+    }
+
+    // check if 1.0, if so you can early return
+    // otherwise we gotta check connection field, which will entail something like strtoking the buf and checking start of each header
+    // if we find one starting with "Connection", check rest of field
+
+    // If we find a valid header: we check if rest is either closed or keep alive
+    // if either, we need to set a flag to pass back too, so we can break out of while loop
+    // otherwise, its a broken request, send BAD_REQUEST
+    // IMPORTANT: IF THIS HAPPENS YOU NEED TO FREE AND SET TO NULL PATH BUF, SO WE DONT TRY TO SEND A FILE
+
+    // If we don't find a valid header, I guess just write without one? do we just optionally strncat the connection header?
+    return 0;
 }
 
 /* thread routine */
@@ -113,16 +226,42 @@ void *thread(void *vargp)
 
 void handle_request(int connfd)
 {
-    size_t n;
     char buf[MAXLINE];
-    // char header[MAXLINE];
-    // char host[MAXLINE];
-    // char connected[MAXLINE];
 
-    read_request(connfd, buf, MAXLINE);
-    printf("%s", buf);
+    switch (read_request(connfd, buf, MAXLINE))
+    {
+    case GOOD_HEADER:
+        // ok so currently my idea was to write a function that parses the headers into the response string
+        // the issue is that I need to grab file stats for content length, which means, I need to parse file location
+        // I only want to do that once, so how do I pass this back? Do I return a heap allocated string or NULL if the path is bad?
+        // Then I could process based on if I got a valid path, I like that
+        // also allows me to break out of while loop if send fails
 
-    close(connfd);
+        Request_Info request = {0};
+        if (parse_request(buf, &request, MAXLINE) == -1) // should fill out our request struct to use for constructing response headers
+        {
+            // malformed header found, just send back request
+            char *to_send = BAD_REQUEST;
+            // TODO: change to send and break out of while loop on sigpipe accordingly
+            write(connfd, to_send, sizeof(to_send));
+            break;
+        }
+        // happy path
+
+        // TODO: set MSG_NOSIGNAL Flag for send, so client can't cause a sigpipe that crashes everything
+        // still check for sigpipe errno to break out of loop
+        break;
+    case BAD_HEADER:
+        char *to_send = BAD_REQUEST;
+        // TODO: change to send and break out of while loop on sigpipe accordingly
+        write(connfd, to_send, sizeof(to_send));
+        break;
+    case TIMEOUT_OCCURED:
+        // technically client could have closed connection but im not making another status when the same thing happens either way
+        break;
+    }
+    // char *to_send = "Hello World!\n";
+    // write(connfd, to_send, sizeof(to_send));
 }
 
 void echo(int connfd)
