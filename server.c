@@ -322,7 +322,7 @@ void handle_request(int connfd)
         snprintf(response_string, MAXLINE,
                  "%s 200 OK\r\n"
                  "Content-Type: %s\r\n"
-                 "Content-Length: %llu\r\n\r\n",
+                 "Content-Length: %ld\r\n\r\n",
                  ver_string, get_content_type(request.path), file_stat.st_size);
 
         write(connfd, response_string, strlen(response_string));
