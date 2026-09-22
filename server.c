@@ -15,7 +15,8 @@
 #define ROOT_DIR "./www"
 #define DEFAULT_FILE "index.html"
 
-#define BAD_REQUEST "HTTP/1.1 400 Bad Request\r\n\r\n"
+#define BAD_REQUEST_RESPONSE "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
+#define UNKNOWN_VERSION_RESPONSE "HTTP/1.1 505 HTTP Version Not Supported\r\nConnection: close\r\n\r\n"
 
 enum Read_Status
 {
@@ -191,7 +192,6 @@ int parse_request(char *read_buf, Request_Info *info, int maxlen)
     else
     {
         info->is_get = 0;
-        return 0; // illegal action, don't need to parse the rest
     }
 
     // parse filepath, prepend ./www and append index.html if path ends in '/'
@@ -256,19 +256,13 @@ void handle_request(int connfd)
     switch (read_request(connfd, buf, MAXLINE))
     {
     case GOOD_HEADER:
-        // ok so currently my idea was to write a function that parses the headers into the response string
-        // the issue is that I need to grab file stats for content length, which means, I need to parse file location
-        // I only want to do that once, so how do I pass this back? Do I return a heap allocated string or NULL if the path is bad?
-        // Then I could process based on if I got a valid path, I like that
-        // also allows me to break out of while loop if send fails
-
         Request_Info request = {0};
         if (parse_request(buf, &request, MAXLINE) == -1) // should fill out our request struct to use for constructing response headers
         {
             // malformed header found, just send bad request response
-            char *to_send = BAD_REQUEST;
-            // TODO: change to send and break out of while loop on sigpipe accordingly
-            write(connfd, to_send, sizeof(to_send));
+            send(connfd, BAD_REQUEST_RESPONSE, strlen(BAD_REQUEST_RESPONSE), MSG_NOSIGNAL); // no signal to prevent epipe crashing program
+            // don't think i need to address the error, if client closes connection, we discover on next read and quit anyway
+            // ya i realize that definitely isn't best practice, maybe I'll come back to it
             break;
         }
 
@@ -285,6 +279,9 @@ void handle_request(int connfd)
         else
         {
             // send unknown version response
+            // I think we just hardcode connection close here and it's not a big deal
+
+            send(connfd, UNKNOWN_VERSION_RESPONSE, strlen(UNKNOWN_VERSION_RESPONSE), MSG_NOSIGNAL);
             break;
         }
 
@@ -292,6 +289,7 @@ void handle_request(int connfd)
         if (!request.is_get)
         {
             // send illegal operation response
+            // IMPORTANT: we need to check connection status here, which means we can't leave early in parse function on illegal method
             break;
         }
 
@@ -325,15 +323,12 @@ void handle_request(int connfd)
                  "Content-Length: %ld\r\n\r\n",
                  ver_string, get_content_type(request.path), file_stat.st_size);
 
-        write(connfd, response_string, strlen(response_string));
+        send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
         sendfile(connfd, fd, NULL, (size_t)file_stat.st_size);
-        // TODO: set MSG_NOSIGNAL Flag for send, so client can't cause a sigpipe that crashes everything
         // still check for sigpipe errno to break out of loop
         break;
     case BAD_HEADER:
-        char *to_send = BAD_REQUEST;
-        // TODO: change to send and break out of while loop on sigpipe accordingly
-        write(connfd, to_send, sizeof(to_send));
+        send(connfd, BAD_REQUEST_RESPONSE, strlen(BAD_REQUEST_RESPONSE), MSG_NOSIGNAL);
         break;
     case TIMEOUT_OCCURED:
         // technically client could have closed connection but im not making another status when the same thing happens either way
@@ -341,17 +336,4 @@ void handle_request(int connfd)
     }
     // char *to_send = "Hello World!\n";
     // write(connfd, to_send, sizeof(to_send));
-}
-
-void echo(int connfd)
-{
-    size_t n;
-    char buf[MAXLINE];
-
-    while ((n = readline(connfd, buf, MAXLINE)) > 0)
-    {
-        printf("server received %zu bytes\n", n);
-        printf("%s", buf);
-        write(connfd, buf, n);
-    }
 }
