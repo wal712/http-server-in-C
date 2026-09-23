@@ -356,11 +356,15 @@ void handle_request(int connfd)
         {
             if (errno == ENOENT)
             {
+                char *body = "<html><body><h1>404 Not Found</h1></body></html>";
+                size_t body_len = strlen(body);
                 // send 404 response
                 snprintf(response_string, MAXLINE,
                          "%s 404 Not Found\r\n"
-                         "Connection: %s\r\n\r\n",
-                         ver_string, conn_string);
+                         "Content-Length: %ld\r\n"
+                         "Connection: %s\r\n\r\n"
+                         "%s",
+                         ver_string, body_len, conn_string, body);
             }
             else
             {
@@ -370,6 +374,7 @@ void handle_request(int connfd)
                          "Connection: %s\r\n\r\n",
                          ver_string, conn_string);
             }
+
             // send here
             send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
             break;
