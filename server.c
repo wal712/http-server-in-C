@@ -361,6 +361,7 @@ void handle_request(int connfd)
                 // send 404 response
                 snprintf(response_string, MAXLINE,
                          "%s 404 Not Found\r\n"
+                         "Content-Type: text/html\r\n"
                          "Content-Length: %ld\r\n"
                          "Connection: %s\r\n\r\n"
                          "%s",
