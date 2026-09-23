@@ -400,6 +400,7 @@ void handle_request(int connfd)
 
         send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
         sendfile(connfd, fd, NULL, (size_t)file_stat.st_size);
+        close(fd);
         // still check for sigpipe errno to break out of loop
         break;
     case BAD_HEADER:
