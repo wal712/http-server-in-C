@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
+#define TIMEOUT_SECONDS 10
 #define MESSAGE_Q 1024
 #define MAXLINE 4096
 #define ROOT_DIR "./www"
@@ -146,8 +147,7 @@ int read_request(int fd, char *buf, int maxlen)
 // returns -1 for a malformed header (info isn't correct, or first header just doesn't exist), 0 for everything else
 int parse_request(char *read_buf, Request_Info *info)
 {
-    // first, check http version, send error 505 if not recognized
-    // Note: if http 1.0, can potentially skip check for connection field and just return, maybe set a flag
+    // first, check http version
     char *header_pointer, *curr_header;
     const char *header_delim = "\r\n";
 
@@ -262,6 +262,10 @@ void *thread(void *vargp)
     int connfd = *((int *)vargp);
     pthread_detach(pthread_self());
     free(vargp);
+    struct timeval timeout;
+    timeout.tv_sec = TIMEOUT_SECONDS;
+    timeout.tv_usec = 0;
+    setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     handle_request(connfd);
     close(connfd);
     return NULL;
@@ -291,126 +295,128 @@ void handle_request(int connfd)
 {
     char buf[MAXLINE];
     char response_string[MAXLINE];
+    int kept_alive = 0;
 
-    switch (read_request(connfd, buf, MAXLINE))
+    do
     {
-    case GOOD_HEADER:
-        Request_Info request = {0};
-        if (parse_request(buf, &request) == -1) // should fill out our request struct to use for constructing response headers
+        switch (read_request(connfd, buf, MAXLINE))
         {
-            // malformed header found, just send bad request response
-            send(connfd, BAD_REQUEST_RESPONSE, strlen(BAD_REQUEST_RESPONSE), MSG_NOSIGNAL); // no signal to prevent epipe crashing program
-            // don't think i need to address the error, if client closes connection, we discover on next read and quit anyway
-            // ya i realize that definitely isn't best practice, maybe I'll come back to it
-            break;
-        }
-
-        char *ver_string;
-        // check if http version is legit
-        if (request.version == NEW_VERSION)
-        {
-            ver_string = "HTTP/1.1";
-        }
-        else if (request.version == OLD_VERSION)
-        {
-            ver_string = "HTTP/1.0";
-        }
-        else
-        {
-            // send unknown version response
-            // I think we just hardcode connection close here and it's not a big deal
-
-            send(connfd, UNKNOWN_VERSION_RESPONSE, strlen(UNKNOWN_VERSION_RESPONSE), MSG_NOSIGNAL);
-            break;
-        }
-
-        char *conn_string;
-        if (request.keep_alive)
-        {
-            conn_string = "Keep-alive";
-        }
-        else
-        {
-            conn_string = "close";
-        }
-
-        // check if GET request
-        if (!request.is_get)
-        {
-            // send illegal operation response
-            // IMPORTANT: we need to check connection status here, which means we can't leave early in parse function on illegal method
-            snprintf(response_string, MAXLINE,
-                     "%s 405 Method Not Allowed\r\n"
-                     "Allow: GET\r\n"
-                     "Connection: %s\r\n\r\n",
-                     ver_string, conn_string);
-            send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
-            break;
-        }
-
-        // check if path works / get file stats
-        // happy path
-        int fd = open(request.path, O_RDONLY);
-        // check for open errors, send appropriate message if so
-        if (fd == -1)
-        {
-            if (errno == ENOENT)
+        case GOOD_HEADER:
+            Request_Info request = {0};
+            if (parse_request(buf, &request) == -1) // should fill out our request struct to use for constructing response headers
             {
-                char *body = "<html><body><h1>404 Not Found</h1></body></html>";
-                size_t body_len = strlen(body);
-                // send 404 response
-                snprintf(response_string, MAXLINE,
-                         "%s 404 Not Found\r\n"
-                         "Content-Type: text/html\r\n"
-                         "Content-Length: %ld\r\n"
-                         "Connection: %s\r\n\r\n"
-                         "%s",
-                         ver_string, body_len, conn_string, body);
+                // malformed header found, just send bad request response
+                send(connfd, BAD_REQUEST_RESPONSE, strlen(BAD_REQUEST_RESPONSE), MSG_NOSIGNAL); // no signal to prevent epipe crashing program
+                // don't think i need to address the error, if client closes connection, we discover on next read and quit anyway
+                // ya i realize that definitely isn't best practice, maybe I'll come back to it
+                break;
+            }
+
+            char *ver_string;
+            // check if http version is legit
+            if (request.version == NEW_VERSION)
+            {
+                ver_string = "HTTP/1.1";
+            }
+            else if (request.version == OLD_VERSION)
+            {
+                ver_string = "HTTP/1.0";
             }
             else
             {
-                // send permission issue response (403)
+                // send unknown version response
+                // I think we just hardcode connection close here and it's not a big deal
+
+                send(connfd, UNKNOWN_VERSION_RESPONSE, strlen(UNKNOWN_VERSION_RESPONSE), MSG_NOSIGNAL);
+                break;
+            }
+
+            char *conn_string;
+            if (request.keep_alive)
+            {
+                conn_string = "Keep-alive";
+                kept_alive = 1;
+            }
+            else
+            {
+                conn_string = "close";
+            }
+
+            // check if GET request
+            if (!request.is_get)
+            {
+                // send illegal operation response
+                // IMPORTANT: we need to check connection status here, which means we can't leave early in parse function on illegal method
+                snprintf(response_string, MAXLINE,
+                         "%s 405 Method Not Allowed\r\n"
+                         "Allow: GET\r\n"
+                         "Connection: %s\r\n\r\n",
+                         ver_string, conn_string);
+                send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
+                break;
+            }
+
+            // check if path works / get file stats
+            // happy path
+            int fd = open(request.path, O_RDONLY);
+            // check for open errors, send appropriate message if so
+            if (fd == -1)
+            {
+                if (errno == ENOENT)
+                {
+                    char *body = "<html><body><h1>404 Not Found</h1></body></html>";
+                    // send 404 response
+                    snprintf(response_string, MAXLINE,
+                             "%s 404 Not Found\r\n"
+                             "Content-Type: text/html\r\n"
+                             "Content-Length: %ld\r\n"
+                             "Connection: %s\r\n\r\n"
+                             "%s",
+                             ver_string, strlen(body), conn_string, body);
+                }
+                else
+                {
+                    // send permission issue response (403)
+                    snprintf(response_string, MAXLINE,
+                             "%s 403 Forbidden\r\n"
+                             "Connection: %s\r\n\r\n",
+                             ver_string, conn_string);
+                }
+
+                // send here
+                send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
+                break;
+            }
+
+            struct stat file_stat;
+            if (fstat(fd, &file_stat) == -1)
+            {
+                // send permission issue response I guess
                 snprintf(response_string, MAXLINE,
                          "%s 403 Forbidden\r\n"
                          "Connection: %s\r\n\r\n",
                          ver_string, conn_string);
+                send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
+                break;
             }
 
-            // send here
-            send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
-            break;
-        }
-
-        struct stat file_stat;
-        if (fstat(fd, &file_stat) == -1)
-        {
-            // send permission issue response I guess
             snprintf(response_string, MAXLINE,
-                     "%s 403 Forbidden\r\n"
-                     "Connection: %s\r\n\r\n",
-                     ver_string, conn_string);
+                     "%s 200 OK\r\n"
+                     "Content-Type: %s\r\n"
+                     "Content-Length: %ld\r\n\r\n",
+                     ver_string, get_content_type(request.path), file_stat.st_size);
+
             send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
+            sendfile(connfd, fd, NULL, (size_t)file_stat.st_size);
+            close(fd);
+            // still check for sigpipe errno to break out of loop
+            break;
+        case BAD_HEADER:
+            send(connfd, BAD_REQUEST_RESPONSE, strlen(BAD_REQUEST_RESPONSE), MSG_NOSIGNAL);
+            break;
+        case TIMEOUT_OCCURED:
+            // technically client could have closed connection but im not making another status when the same thing happens either way
             break;
         }
-
-        snprintf(response_string, MAXLINE,
-                 "%s 200 OK\r\n"
-                 "Content-Type: %s\r\n"
-                 "Content-Length: %ld\r\n\r\n",
-                 ver_string, get_content_type(request.path), file_stat.st_size);
-
-        send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
-        sendfile(connfd, fd, NULL, (size_t)file_stat.st_size);
-        close(fd);
-        // still check for sigpipe errno to break out of loop
-        break;
-    case BAD_HEADER:
-        send(connfd, BAD_REQUEST_RESPONSE, strlen(BAD_REQUEST_RESPONSE), MSG_NOSIGNAL);
-        break;
-    case TIMEOUT_OCCURED:
-        // technically client could have closed connection but im not making another status when the same thing happens either way
-        break;
-    }
-    // char *to_send = "Hello World!\n";
-    // write(connfd, to_send, sizeof(to_send));
+    } while (kept_alive); // TODO: ADD GLOBAL FLAG FOR HANDLING CTRL-C
 }
