@@ -357,6 +357,10 @@ void handle_request(int connfd)
             if (errno == ENOENT)
             {
                 // send 404 response
+                snprintf(response_string, MAXLINE,
+                         "%s 404 Not Found\r\n"
+                         "Connection: %s\r\n\r\n",
+                         ver_string, conn_string);
             }
             else
             {
