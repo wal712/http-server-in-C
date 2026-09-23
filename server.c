@@ -344,6 +344,7 @@ void handle_request(int connfd)
                      "Allow: GET\r\n"
                      "Connection: %s\r\n\r\n",
                      ver_string, conn_string);
+            send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
             break;
         }
 
@@ -361,6 +362,7 @@ void handle_request(int connfd)
             {
                 // send permission issue response (403)
             }
+            // send here
             break;
         }
 
