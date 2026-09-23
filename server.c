@@ -207,13 +207,52 @@ int parse_request(char *read_buf, Request_Info *info, int maxlen)
     // check if 1.0, if so you can early return
     // otherwise we gotta check connection field, which will entail something like strtoking the buf and checking start of each header
     // if we find one starting with "Connection", check rest of field
+    char *connect_start = "Connection";
+    size_t connect_length = strlen(connect_length);
+    while ((curr_header = strtok_r(NULL, header_delim, header_pointer)))
+    {
+        if (strncmp(curr_header, connect_start, connect_length) == 0)
+        {
+            break;
+        }
+    }
 
     // If we find a valid header: we check if rest is either closed or keep alive
-    // if either, we need to set a flag to pass back too, so we can break out of while loop
-    // otherwise, its a broken request, send BAD_REQUEST
-    // IMPORTANT: IF THIS HAPPENS YOU NEED TO FREE AND SET TO NULL PATH BUF, SO WE DONT TRY TO SEND A FILE
-
-    // If we don't find a valid header, I guess just write without one? do we just optionally strncat the connection header?
+    char *keep_string = "Connection: Keep-alive";
+    char *close_string = "Connection: close";
+    if (curr_header)
+    {
+        // If they somehow botch the rest of the header, we treat it with same decision making as else statement below
+        if (strncmp(curr_header, keep_string, strlen(keep_string)) == 0)
+        {
+            info->keep_alive = 1;
+        }
+        else if (strncmp(curr_header, close_string, strlen(close_string)) = 0)
+        {
+            info->keep_alive = 0;
+        }
+        else if (info->version == NEW_VERSION)
+        {
+            info->keep_alive = 1;
+        }
+        else
+        {
+            info->keep_alive = 0;
+        }
+    }
+    else
+    {
+        // Didn't find connection header.
+        // Our assumption changes depending on version
+        if (info->version == NEW_VERSION)
+        {
+            info->keep_alive = 1;
+        }
+        else
+        {
+            info->keep_alive = 0;
+        }
+    }
     return 0;
 }
 
@@ -285,11 +324,26 @@ void handle_request(int connfd)
             break;
         }
 
+        char *conn_string;
+        if (request.keep_alive)
+        {
+            conn_string = "Keep-alive";
+        }
+        else
+        {
+            conn_string = "close";
+        }
+
         // check if GET request
         if (!request.is_get)
         {
             // send illegal operation response
             // IMPORTANT: we need to check connection status here, which means we can't leave early in parse function on illegal method
+            snprintf(response_string, MAXLINE,
+                     "%s 405 Method Not Allowed\r\n"
+                     "Allow: GET\r\n"
+                     "Connection: %s\r\n\r\n",
+                     ver_string, conn_string);
             break;
         }
 
