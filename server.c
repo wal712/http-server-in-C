@@ -144,7 +144,7 @@ int read_request(int fd, char *buf, int maxlen)
 }
 
 // returns -1 for a malformed header (info isn't correct, or first header just doesn't exist), 0 for everything else
-int parse_request(char *read_buf, Request_Info *info, int maxlen)
+int parse_request(char *read_buf, Request_Info *info)
 {
     // first, check http version, send error 505 if not recognized
     // Note: if http 1.0, can potentially skip check for connection field and just return, maybe set a flag
@@ -209,7 +209,7 @@ int parse_request(char *read_buf, Request_Info *info, int maxlen)
     // if we find one starting with "Connection", check rest of field
     char *connect_start = "Connection";
     size_t connect_length = strlen(connect_start);
-    while ((curr_header = strtok_r(NULL, header_delim, header_pointer)))
+    while ((curr_header = strtok_r(NULL, header_delim, &header_pointer)))
     {
         if (strncmp(curr_header, connect_start, connect_length) == 0)
         {
@@ -296,7 +296,7 @@ void handle_request(int connfd)
     {
     case GOOD_HEADER:
         Request_Info request = {0};
-        if (parse_request(buf, &request, MAXLINE) == -1) // should fill out our request struct to use for constructing response headers
+        if (parse_request(buf, &request) == -1) // should fill out our request struct to use for constructing response headers
         {
             // malformed header found, just send bad request response
             send(connfd, BAD_REQUEST_RESPONSE, strlen(BAD_REQUEST_RESPONSE), MSG_NOSIGNAL); // no signal to prevent epipe crashing program
