@@ -171,11 +171,11 @@ int parse_request(char *read_buf, Request_Info *info, int maxlen)
     const char *new_version = "HTTP/1.1";
     const char *old_version = "HTTP/1.0";
 
-    if (strncmp(version, new_version, sizeof(new_version)) == 0)
+    if (strncmp(version, new_version, strlen(new_version)) == 0)
     {
         info->version = NEW_VERSION;
     }
-    else if (strncmp(version, old_version, sizeof(old_version)) == 0)
+    else if (strncmp(version, old_version, strlen(old_version)) == 0)
     {
         info->version = OLD_VERSION;
     }
@@ -208,7 +208,7 @@ int parse_request(char *read_buf, Request_Info *info, int maxlen)
     // otherwise we gotta check connection field, which will entail something like strtoking the buf and checking start of each header
     // if we find one starting with "Connection", check rest of field
     char *connect_start = "Connection";
-    size_t connect_length = strlen(connect_length);
+    size_t connect_length = strlen(connect_start);
     while ((curr_header = strtok_r(NULL, header_delim, header_pointer)))
     {
         if (strncmp(curr_header, connect_start, connect_length) == 0)
@@ -227,7 +227,7 @@ int parse_request(char *read_buf, Request_Info *info, int maxlen)
         {
             info->keep_alive = 1;
         }
-        else if (strncmp(curr_header, close_string, strlen(close_string)) = 0)
+        else if (strncmp(curr_header, close_string, strlen(close_string)) == 0)
         {
             info->keep_alive = 0;
         }
@@ -365,8 +365,13 @@ void handle_request(int connfd)
             else
             {
                 // send permission issue response (403)
+                snprintf(response_string, MAXLINE,
+                         "%s 403 Forbidden\r\n"
+                         "Connection: %s\r\n\r\n",
+                         ver_string, conn_string);
             }
             // send here
+            send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
             break;
         }
 
@@ -374,6 +379,11 @@ void handle_request(int connfd)
         if (fstat(fd, &file_stat) == -1)
         {
             // send permission issue response I guess
+            snprintf(response_string, MAXLINE,
+                     "%s 403 Forbidden\r\n"
+                     "Connection: %s\r\n\r\n",
+                     ver_string, conn_string);
+            send(connfd, response_string, strlen(response_string), MSG_NOSIGNAL);
             break;
         }
 
