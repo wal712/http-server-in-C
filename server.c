@@ -63,7 +63,7 @@ int main(int argc, char **argv)
     pthread_t tid;
     struct sigaction sig_struct;
 
-    sig_struct.__sigaction_u = handle_sigint;
+    sig_struct.sa_handler = handle_sigint;
     sigemptyset(&sig_struct.sa_mask);
     sig_struct.sa_flags = 0;
 
@@ -84,7 +84,8 @@ int main(int argc, char **argv)
     socket_desc = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_desc == -1)
     {
-        perror("Socket creation failed") return EXIT_FAILURE;
+        perror("Socket creation failed");
+        return EXIT_FAILURE;
     }
 
     server.sin_family = AF_INET;
