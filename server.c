@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sendfile.h>
@@ -46,6 +47,13 @@ void *thread(void *vargp);
 void echo(int connfd);
 void handle_request(int connfd);
 
+volatile sig_atomic_t is_running = 1;
+
+void handle_sigint(int sig)
+{
+    is_running = 0;
+}
+
 int main(int argc, char **argv)
 {
     int socket_desc, port;
@@ -53,6 +61,17 @@ int main(int argc, char **argv)
     socklen_t clientlen = sizeof(clientaddr);
     int *client_sockp;
     pthread_t tid;
+    struct sigaction sig_struct;
+
+    sig_struct.__sigaction_u = handle_sigint;
+    sigemptyset(&sig_struct.sa_mask);
+    sig_struct.sa_flags = 0;
+
+    if (sigaction(SIGINT, &sig_struct, NULL) == -1)
+    {
+        perror("Failed to register SIGINT handler");
+        return EXIT_FAILURE;
+    }
 
     if (argc != 2)
     {
@@ -65,8 +84,7 @@ int main(int argc, char **argv)
     socket_desc = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_desc == -1)
     {
-        fprintf(stderr, "Failed to create socket\n");
-        return 1;
+        perror("Socket creation failed") return EXIT_FAILURE;
     }
 
     server.sin_family = AF_INET;
@@ -75,23 +93,24 @@ int main(int argc, char **argv)
 
     if (bind(socket_desc, (struct sockaddr *)&server, sizeof(server)) < 0)
     {
-        fprintf(stderr, "Failed to bind socket\n");
-        return 1;
+        perror("Socket binding failed");
+        return EXIT_FAILURE;
     }
 
     if (listen(socket_desc, MESSAGE_Q) < 0)
     {
-        fprintf(stderr, "Listening on socket failed\n");
-        return 1;
+        perror("Socket listening failed");
+        return EXIT_FAILURE;
     }
 
-    while (1)
+    while (is_running)
     {
         client_sockp = malloc(sizeof(int)); // frees in thread function
         *client_sockp = accept(socket_desc, (struct sockaddr *)&clientaddr, &clientlen);
         pthread_create(&tid, NULL, thread, client_sockp);
     }
-    printf("loop left\n");
+    close(socket_desc);
+    return EXIT_SUCCESS;
 }
 
 /*
@@ -129,7 +148,7 @@ int read_request(int fd, char *buf, int maxlen)
     for (n = 0; n < maxlen - 1; n++)
     {
         nc = read(fd, &buf[n], 1);
-        if (nc <= 0)
+        if (nc <= 0 || !is_running) // if sigint occurs, we just bail, I'm not letting some rogue client drip feed me packets
         {
             status = TIMEOUT_OCCURED;
             break;
@@ -418,5 +437,5 @@ void handle_request(int connfd)
             // technically client could have closed connection but im not making another status when the same thing happens either way
             break;
         }
-    } while (kept_alive); // TODO: ADD GLOBAL FLAG FOR HANDLING CTRL-C
+    } while (kept_alive && is_running);
 }
