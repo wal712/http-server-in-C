@@ -7,4 +7,4 @@ Compile using make with provided Makefile, run with:
 ./server <port>
 ```
 
-Grading script used by class is included too, as well as sample files used by script, located in www\.
+Grading script used by class is included too, as well as sample files used by script, located in `www`.
